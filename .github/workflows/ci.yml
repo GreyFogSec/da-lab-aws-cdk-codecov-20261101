@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  untrusted-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Produce coverage output
+        run: |
+          set -euo pipefail
+          mkdir -p coverage-artifacts
+          cp coverage-payload.txt coverage-artifacts/coverage.xml
+          sha256sum coverage-artifacts/coverage.xml > coverage-artifacts/producer.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-artifacts
+          path: coverage-artifacts
+          if-no-files-found: error
+          retention-days: 2

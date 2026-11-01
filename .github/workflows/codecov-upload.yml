@@ -1,0 +1,86 @@
+name: Codecov Upload
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  id-token: write
+  actions: read
+
+jobs:
+  positive-control:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Record boundary state
+        run: |
+          set -euo pipefail
+          test -L packages/aws-cdk-lib/core/coverage
+          test "$(readlink packages/aws-cdk-lib/core/coverage)" = "../../../.lab-protected"
+
+      - name: Download triggering PR artifact through the linked destination
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-artifacts
+          path: ./packages/aws-cdk-lib/core/coverage
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify out-of-boundary write
+        id: evidence
+        run: |
+          set -euo pipefail
+          test -f .lab-protected/coverage.xml
+          payload_hash="$(sha256sum .lab-protected/coverage.xml | cut -d' ' -f1)"
+          producer_hash="$(cut -d' ' -f1 .lab-protected/producer.sha256)"
+          test "$payload_hash" = "$producer_hash"
+          jq -n \
+            --arg classification "ARTIFICIAL_POSITIVE_CONTROL" \
+            --arg source_run "${{ github.event.workflow_run.id }}" \
+            --arg sha256 "$payload_hash" \
+            --arg destination ".lab-protected/coverage.xml" \
+            '{classification:$classification,source_run:$source_run,sha256:$sha256,destination:$destination}' \
+            > "$RUNNER_TEMP/da01-evidence.json"
+          echo "payload_hash=$payload_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Create harmless canary release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="da01-${GITHUB_RUN_ID}"
+          gh release create "$tag" "$RUNNER_TEMP/da01-evidence.json" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "DA-01 positive control ${GITHUB_RUN_ID}" \
+            --notes "Synthetic lab evidence only. Payload SHA-256: ${{ steps.evidence.outputs.payload_hash }}"
+
+  fresh-directory-negative-control:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-artifacts
+          path: ${{ runner.temp }}/coverage
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Verify contained extraction
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/coverage/coverage.xml"
+          test ! -e "$GITHUB_WORKSPACE/coverage.xml"
